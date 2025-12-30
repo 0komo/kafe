@@ -44,6 +44,39 @@ pub type TlsAlertKind {
   NoApplicationProtocol
 }
 
+pub type Curve {
+  X25519
+  X448
+  Secp521r1
+  BrainpoolP512r1
+  BrainpoolP384r1
+  Secp384r1
+  BrainpoolP256r1
+  Secp256r1
+  Sect571r1
+  Sect571k1
+  Sect409k1
+  Sect409r1
+  Sect283k1
+  Sect283r1
+  Secp256k1
+  Sect239k1
+  Sect233k1
+  Sect233r1
+  Secp224k1
+  Secp224r1
+  Sect193r1
+  Sect193r2
+  Secp192k1
+  Secp192r1
+  Sect163k1
+  Sect163r1
+  Sect163r2
+  Secp160k1
+  Secp160r1
+  Secp160r2
+}
+
 /// Error that can occur on some operation.
 ///
 /// For more details, check out the Erlang docs:
@@ -54,16 +87,21 @@ pub type TlsAlertKind {
 pub type Error {
   /// Connection was closed
   Closed
-  /// An opaque error meant for debugging
-  Options(Dynamic)
+  /// Conncetion timed out
+  Timeout
   /// An opaque error meant for debugging
   Other(Dynamic)
   /// Error that comes from the connection
-  TcpError(mug.Error)
+  PosixError(mug.Error)
   /// A specified cipher suite was not recognized
   CipherSuiteNotRecognized(name: String)
   /// Error that comes from the TLS interaction
   TlsAlert(kind: TlsAlertKind, description: String)
+}
+
+pub type ExportKeyMaterialsError {
+  ExporterMasterSecretAlreadyConsumed
+  BadInput
 }
 
 /// Enum of supported protocol version
@@ -94,11 +132,14 @@ pub type WrapOptions {
   WrapOptions(
     protocol_versions: List(ProtocolVersion),
     alpn: List(String),
-    cacertfile: Option(String),
+    cacert_file: Option(String),
     cipher_suites: List(String),
     depth: Int,
     verify: VerificationType,
     certificates: List(Certificate),
+    curves: List(Curve),
+    handshake_pause: Bool,
+    server_name_indication: Option(String),
   )
 }
 
@@ -109,69 +150,144 @@ pub type SslMessage {
   SslError(SslSocket, Error)
 }
 
-/// Default options when wrapping
+/// Default options for wrapping
 pub fn default_options() -> WrapOptions {
   WrapOptions(
     protocol_versions: [Tlsv1m2, Tlsv1m3],
     alpn: [],
-    cacertfile: None,
+    cacert_file: None,
     cipher_suites: [],
     depth: 100,
     verify: VerifyPeer,
     certificates: [],
+    curves: [],
+    handshake_pause: False,
+    server_name_indication: None,
   )
+}
+
+pub fn protocol_versions(
+  options: WrapOptions,
+  versions protocol_versions: List(ProtocolVersion),
+) -> WrapOptions {
+  WrapOptions(..options, protocol_versions:)
+}
+
+pub fn alpn(options: WrapOptions, protocols alpn: List(String)) -> WrapOptions {
+  WrapOptions(..options, alpn:)
+}
+
+pub fn cacert_file(
+  options: WrapOptions,
+  file cacert_file: String,
+) -> WrapOptions {
+  WrapOptions(..options, cacert_file: Some(cacert_file))
+}
+
+pub fn cipher_suites(
+  options: WrapOptions,
+  ciphers cipher_suites: List(String),
+) -> WrapOptions {
+  WrapOptions(..options, cipher_suites:)
+}
+
+pub fn depth(options: WrapOptions, depth depth: Int) -> WrapOptions {
+  WrapOptions(..options, depth:)
+}
+
+pub fn verify(
+  options: WrapOptions,
+  verify_type verify: VerificationType,
+) -> WrapOptions {
+  WrapOptions(..options, verify:)
+}
+
+pub fn certificate(
+  options: WrapOptions,
+  certificate cert: Certificate,
+) -> WrapOptions {
+  WrapOptions(
+    ..options,
+    certificates: list.append(options.certificates, [cert]),
+  )
+}
+
+pub fn certificates(
+  options: WrapOptions,
+  certificates certs: List(Certificate),
+) -> WrapOptions {
+  WrapOptions(..options, certificates: list.append(options.certificates, certs))
+}
+
+pub fn curves(options: WrapOptions, curves curves: List(Curve)) -> WrapOptions {
+  WrapOptions(..options, curves:)
+}
+
+pub fn handshake_pause(options: WrapOptions) -> WrapOptions {
+  WrapOptions(..options, handshake_pause: True)
+}
+
+pub fn server_name_indication(
+  options: WrapOptions,
+  hostname name: String,
+) -> WrapOptions {
+  WrapOptions(..options, server_name_indication: Some(name))
 }
 
 /// Upgrades a TCP connection to SSL connection.
 ///
 /// Returns an error if upgrading was failed.
 pub fn wrap(
-  socket: mug.Socket,
-  options opts: WrapOptions,
+  optiohns options: WrapOptions,
+  socket socket: mug.Socket,
 ) -> Result(SslSocket, Error) {
-  use ciphers <- result.try(strings_to_suites(opts.cipher_suites))
-
-  let connect_options =
-    list.flatten([
-      [
-        Versions(
-          list.map(opts.protocol_versions, fn(ver) {
-            atom.create(case ver {
-              Tlsv1 -> "tlsv1"
-              Tlsv1m1 -> "tlsv1.1"
-              Tlsv1m2 -> "tlsv1.2"
-              Tlsv1m3 -> "tlsv1.3"
-            })
-          }),
-        ),
-        Cacerts(public_key_cacerts_get()),
-        Depth(opts.depth),
-        Verify(opts.verify),
-        CertsKeys(
-          list.map(opts.certificates, fn(cert) {
-            dict.new()
-            |> dict.insert("certfile", cert.certfile |> dynamic.string)
-            |> dict.insert("keyfile", cert.keyfile |> dynamic.string)
-            |> fn(d) {
-              case cert.password {
-                Some(func) -> d |> dict.insert("password", func |> unsafe_cast)
-                None -> d
-              }
-            }
-          }),
-        ),
-      ],
-      optional(option.is_some(opts.cacertfile), fn() {
-        let assert Some(path) = opts.cacertfile
-        Cacertfile(path)
-      }),
-      optional(!list.is_empty(ciphers), fn() { Ciphers(ciphers) }),
-      optional(!list.is_empty(opts.alpn), fn() {
-        AlpnAdvertisedProtocols(opts.alpn)
-      }),
-    ])
-
+  use connect_options <- result.try(coerce_options(options))
   ffi_wrap(socket, connect_options)
+}
+
+pub fn handshake_continue(
+  options options: WrapOptions,
+  socket socket: SslSocket,
+  timeout_miliseconds timeout: Int,
+) -> Result(SslSocket, Error) {
+  use handshake_options <- result.try(coerce_options(options))
+  ssl_handshake_continue(socket, handshake_options, timeout)
+}
+
+pub fn handshake_cancel(socket: SslSocket) -> Result(Nil, Error) {
+  ffi_handshake_cancel(socket)
+}
+
+pub fn export_key_material(
+  socket: SslSocket,
+  label label: BitArray,
+  context context: Option(BitArray),
+  wanted_length length: Int,
+) -> Result(BitArray, ExportKeyMaterialsError) {
+  use key_materials <- result.try(
+    export_key_materials(socket, [label], [context], [length]),
+  )
+  case list.first(key_materials) {
+    Error(_) -> Error(BadInput)
+    Ok(key_material) -> Ok(key_material)
+  }
+}
+
+pub fn export_key_materials(
+  socket: SslSocket,
+  labels labels: List(BitArray),
+  contexts contexts: List(Option(BitArray)),
+  wanted_lengths lengths: List(Int),
+) -> Result(List(BitArray), ExportKeyMaterialsError) {
+  let contexts =
+    list.map(contexts, fn(wrap_context) {
+      case wrap_context {
+        Some(context) -> dynamic.bit_array(context)
+        None -> atom.create("no_context") |> atom.to_dynamic
+      }
+    })
+
+  ssl_export_key_materials(socket, labels, contexts, lengths)
 }
 
 pub fn send(socket: SslSocket, data: BitArray) -> Result(Nil, mug.Error) {
@@ -200,7 +316,7 @@ pub fn receive_exact(
 }
 
 pub fn receive_next_packet_as_message(socket: SslSocket) -> Nil {
-  ssl_setopts(socket, [atom.create("once") |> Active])
+  ssl_setopts(socket, [Active(Once)])
   Nil
 }
 
@@ -222,7 +338,7 @@ pub fn select_ssl_messages(
 @external(erlang, "kafein_ffi", "shutdown")
 pub fn shutdown(socket: SslSocket) -> Result(Nil, mug.Error)
 
-type ConnectOptions {
+type InternalTlsOption {
   Versions(List(Atom))
   Cacerts(Dynamic)
   Depth(Int)
@@ -231,11 +347,101 @@ type ConnectOptions {
   AlpnAdvertisedProtocols(List(String))
   Cacertfile(String)
   CertsKeys(List(Dict(String, Dynamic)))
+  Handshake(HandshakeType)
+  Eccs(List(Curve))
+  ServerNameIndication(Dynamic)
 }
 
 type GenTcpOption {
-  Active(Atom)
+  Active(ActiveType)
 }
+
+type ActiveType {
+  Once
+}
+
+type HandshakeType {
+  Hello
+  Full
+}
+
+fn coerce_options(
+  options: WrapOptions,
+) -> Result(List(InternalTlsOption), Error) {
+  use ciphers <- result.try(strings_to_suites(options.cipher_suites))
+
+  [
+    Versions(
+      list.map(options.protocol_versions, fn(ver) {
+        atom.create(case ver {
+          Tlsv1 -> "tlsv1"
+          Tlsv1m1 -> "tlsv1.1"
+          Tlsv1m2 -> "tlsv1.2"
+          Tlsv1m3 -> "tlsv1.3"
+        })
+      }),
+    ),
+    Cacerts(public_key_cacerts_get()),
+    Depth(options.depth),
+    Verify(options.verify),
+    CertsKeys(
+      list.map(options.certificates, fn(cert) {
+        dict.new()
+        |> dict.insert("certfile", cert.certfile |> dynamic.string)
+        |> dict.insert("keyfile", cert.keyfile |> dynamic.string)
+        |> fn(d) {
+          case cert.password {
+            Some(func) -> d |> dict.insert("password", func |> unsafe_cast)
+            None -> d
+          }
+        }
+      }),
+    ),
+    Handshake(case options.handshake_pause {
+      True -> Hello
+      False -> Full
+    }),
+    ServerNameIndication(case options.server_name_indication {
+      Some(name) -> dynamic.string(name)
+      None -> atom.create("disable") |> atom.to_dynamic
+    }),
+  ]
+  |> list.append(case options.cacert_file {
+    Some(cacert_file) -> [Cacertfile(cacert_file)]
+    None -> []
+  })
+  |> list.append(case ciphers {
+    [] -> []
+    _ -> [Ciphers(ciphers)]
+  })
+  |> list.append(case options.alpn {
+    [] -> []
+    alpn -> [AlpnAdvertisedProtocols(alpn)]
+  })
+  |> list.append(case options.curves {
+    [] -> []
+    eccs -> [Eccs(eccs)]
+  })
+  |> Ok
+}
+
+@external(erlang, "ssl", "export_key_materials")
+fn ssl_export_key_materials(
+  socket: SslSocket,
+  labels: List(BitArray),
+  contexts: List(Dynamic),
+  wanted_lengths: List(Int),
+) -> Result(List(BitArray), ExportKeyMaterialsError)
+
+@external(erlang, "kafein_ffi", "handshake_cancel")
+fn ffi_handshake_cancel(socket: SslSocket) -> Result(Nil, Error)
+
+@external(erlang, "ssl", "handshake_continue")
+fn ssl_handshake_continue(
+  socket: SslSocket,
+  options: List(InternalTlsOption),
+  timeout: Int,
+) -> Result(SslSocket, Error)
 
 @external(erlang, "ssl", "recv")
 fn ssl_recv(
@@ -247,17 +453,10 @@ fn ssl_recv(
 @external(erlang, "ssl", "setopts")
 fn ssl_setopts(socket: SslSocket, options: List(GenTcpOption)) -> Dynamic
 
-fn optional(cond: Bool, value: fn() -> a) -> List(a) {
-  case cond {
-    True -> [value()]
-    False -> []
-  }
-}
-
 @external(erlang, "kafein_ffi", "wrap")
 fn ffi_wrap(
   socket: mug.Socket,
-  options: List(ConnectOptions),
+  options: List(InternalTlsOption),
 ) -> Result(SslSocket, Error)
 
 @external(erlang, "public_key", "cacerts_get")
