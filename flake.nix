@@ -8,31 +8,28 @@
     flakelight-treefmt.inputs.flakelight.follows = "flakelight";
   };
 
-  outputs = { flakelight, ... }@inputs:
-    flakelight ./.
-    {
+  outputs =
+    { flakelight, ... }@inputs:
+    flakelight ./. {
       inherit inputs;
 
       imports = with inputs; [
         flakelight-treefmt.flakelightModules.default
       ];
-      
-      devShell.packages = pkgs: with pkgs; [
-        gleam
-        deno
-        erlang-language-platform
-      ] ++ (with beam28Packages; [
-        erlang
-        rebar3
-      ]);
+
+      devShell.packages =
+        pkgs:
+        with pkgs;
+        [
+          nushell
+          gleam
+          erlang-language-platform
+        ]
+        ++ (with beam28Packages; [
+          erlang
+          rebar3
+        ]);
 
       treefmtConfig = import ./treefmt.nix;
-
-      devShells.test = {
-        shellHook = ''
-          gleam test
-          exit
-        '';
       };
-    };
 }

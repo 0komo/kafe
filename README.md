@@ -6,7 +6,7 @@
 A TLS client for Gleam on Erlang!
 
 ```sh
-gleam add kafein@1
+gleam add kafein@2
 ```
 ```gleam
 import mug
@@ -20,7 +20,7 @@ pub fn main() {
     |> mug.connect
 
   // Upgrade the connection to TLS
-  let assert Ok(ssl_socket) = kafein.wrap(socket, options: kafein.default_options())
+  let assert Ok(ssl_socket) = kafein.wrap(kafein.default_options, socket)
 
   // Send a data to the server
   let assert Ok(_) = kafein.send(ssl_socket, <<"Password: gleam-is-awesome\n":utf8>>)
@@ -37,6 +37,6 @@ Further documentation can be found at <https://hexdocs.pm/kafein>.
 ## Development
 
 ```sh
-gleam run -m xtask/format # Format
+./tasks.nu format # Format
 gleam test # Run the tests
 ```
